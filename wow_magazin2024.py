@@ -1,18 +1,40 @@
 import telebot
 from telebot import types
-import requests
+import sqlite3
 
-#Настройки бота
-API_TOKEN = 'API_TOKEN'
-ADMIN_CHAT_ID = 'ADMIN_CHAT_ID'
-# YKASSA_SHOP_ID = '401451'
-# YKASSA_SECRET_KEY = 'test_oLFWBUnXbREdqZnNGqJHx8oDq8nLo2KNFwFe92xzkw8'
+# Настройки бота
+API_TOKEN = ''
+ADMIN_CHAT_ID = ''
 
+# Инициализация бота
 bot = telebot.TeleBot(API_TOKEN)
 
-# "База данных" с заказами пользователей
-user_data = {}
-cart = {}
+# Подключение к базе данных SQLite
+conn = sqlite3.connect('orders.db', check_same_thread=False)
+cursor = conn.cursor()
+
+# Создание таблицы пользователей, если она не существует
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        chat_id INTEGER PRIMARY KEY,
+        name TEXT,
+        phone TEXT,
+        address TEXT
+    )
+''')
+
+# Создание таблицы заказов, если она не существует
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS orders (
+        order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        products TEXT,
+        comment TEXT,
+        status INTEGER DEFAULT 0,
+        FOREIGN KEY(chat_id) REFERENCES users(chat_id)
+    )
+''')
+conn.commit()
 
 # Обработчик команды /start для пользователя
 @bot.message_handler(commands=['start'])
@@ -26,28 +48,33 @@ def start(message):
         bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
     else:
         # Если пользователь не является администратором
-        user_data[chat_id] = {}
         bot.send_message(chat_id, "Добро пожаловать! Пожалуйста, введите ваше имя:")
         bot.register_next_step_handler(message, get_name)
 
 # Функция для получения имени пользователя
 def get_name(message):
     chat_id = message.chat.id
-    user_data[chat_id]['name'] = message.text
+    name = message.text
+    cursor.execute('INSERT INTO users (chat_id, name) VALUES (?, ?)', (chat_id, name))
+    conn.commit()
     bot.send_message(chat_id, "Пожалуйста, введите ваш телефон:")
     bot.register_next_step_handler(message, get_phone)
 
 # Функция для получения телефона пользователя
 def get_phone(message):
     chat_id = message.chat.id
-    user_data[chat_id]['phone'] = message.text
+    phone = message.text
+    cursor.execute('UPDATE users SET phone = ? WHERE chat_id = ?', (phone, chat_id))
+    conn.commit()
     bot.send_message(chat_id, "Пожалуйста, введите ваш адрес:")
     bot.register_next_step_handler(message, get_address)
 
 # Функция для получения адреса пользователя
 def get_address(message):
     chat_id = message.chat.id
-    user_data[chat_id]['address'] = message.text
+    address = message.text
+    cursor.execute('UPDATE users SET address = ? WHERE chat_id = ?', (address, chat_id))
+    conn.commit()
     show_product_groups(chat_id)
 
 # Функция для отображения групп товаров
@@ -92,11 +119,14 @@ def show_products(message):
 def add_to_cart(message):
     chat_id = message.chat.id
     product = message.text
-    if chat_id not in user_data:
-        user_data[chat_id] = {}
-    if 'cart' not in user_data[chat_id]:
-        user_data[chat_id]['cart'] = []
-    user_data[chat_id]['cart'].append(product)
+    cursor.execute('SELECT products FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1', (chat_id,))
+    last_order = cursor.fetchone()
+    if last_order and last_order[0]:
+        products = last_order[0] + f"\n{product}"
+    else:
+        products = product
+    cursor.execute('INSERT INTO orders (chat_id, products, status) VALUES (?, ?, 0)', (chat_id, products))
+    conn.commit()
     bot.send_message(chat_id, f"{product} добавлен в корзину.")
     show_product_groups(chat_id)
 
@@ -104,9 +134,10 @@ def add_to_cart(message):
 @bot.message_handler(func=lambda message: message.text == "Корзина")
 def view_cart(message):
     chat_id = message.chat.id
-    if chat_id in user_data and 'cart' in user_data[chat_id] and user_data[chat_id]['cart']:
-        cart_items = "\n".join(user_data[chat_id]['cart'])
-        bot.send_message(chat_id, f"Ваша корзина:\n{cart_items}")
+    cursor.execute('SELECT products FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1', (chat_id,))
+    cart_items = cursor.fetchone()
+    if cart_items and cart_items[0]:
+        bot.send_message(chat_id, f"Ваша корзина:\n{cart_items[0]}")
         send_order(message)
     else:
         bot.send_message(chat_id, "Ваша корзина пуста.")
@@ -121,50 +152,75 @@ def send_order(message):
 # Функция для получения комментария к заказу
 def get_comment(message):
     chat_id = message.chat.id
-    user_data[chat_id]['comment'] = message.text
-    bot.send_message(chat_id, "Комментарий получен. Спасибо за ваш заказ!")
-    notify_admin(chat_id)
+    comment = message.text
 
-# Функция для отправки уведомления администратору
+    # Получаем ID последнего заказа пользователя
+    cursor.execute('SELECT order_id FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1', (chat_id,))
+    order_id = cursor.fetchone()
+
+    if order_id:
+        # Обновляем комментарий в последнем заказе пользователя
+        cursor.execute('UPDATE orders SET comment = ?, status = 0 WHERE order_id = ?', (comment, order_id[0]))
+        conn.commit()
+        bot.send_message(chat_id, "Комментарий получен. Спасибо за ваш заказ!")
+        notify_admin(chat_id)
+        clear_cart(chat_id)  # Очистка корзины после заказа
+    else:
+        bot.send_message(chat_id, "Произошла ошибка при добавлении комментария к заказу.")
+
+#функции для отправки уведомления администратору
 def notify_admin(chat_id):
-    if chat_id in user_data:
-        user_info = user_data[chat_id]
-        if 'name' in user_info and 'phone' in user_info and 'address' in user_info and 'comment' in user_info and 'cart' in user_info:
-            cart_items = "\n".join(user_info['cart'])
-            admin_message = (f"Новый заказ!\n\n"
-                             f"Имя: {user_info['name']}\n"
-                             f"Телефон: {user_info['phone']}\n"
-                             f"Адрес: {user_info['address']}\n"
-                             f"Комментарий: {user_info['comment']}\n"
-                             f"Товары:\n{cart_items}\n"
-                             f"ID пользователя: {chat_id}")
-            bot.send_message(ADMIN_CHAT_ID, admin_message)
-        else:
-            bot.send_message(ADMIN_CHAT_ID, "Недостаточно данных для уведомления о заказе.")
+    cursor.execute('''
+        SELECT users.name, users.phone, users.address, orders.products, orders.comment
+        FROM orders
+        INNER JOIN users ON orders.chat_id = users.chat_id
+        WHERE orders.chat_id = ? AND orders.status = 0
+        ORDER BY orders.order_id DESC LIMIT 1
+    ''', (chat_id,))
+    order_info = cursor.fetchone()
 
-# Обработчик кнопки "Главное меню"
-@bot.message_handler(func=lambda message: message.text == "Главное меню")
-def main_menu(message):
-    chat_id = message.chat.id
-    show_product_groups(chat_id)
+    if order_info:
+        name, phone, address, products, comment = order_info
+        message_to_admin = f"Новый заказ!\n\n" \
+                           f"Имя: {name}\n" \
+                           f"Телефон: {phone}\n" \
+                           f"Адрес: {address}\n" \
+                           f"Комментарий: {comment}\n" \
+                           f"Товары:\n{products}"
+        bot.send_message(ADMIN_CHAT_ID, message_to_admin)
+    else:
+        bot.send_message(ADMIN_CHAT_ID, "Произошла ошибка при получении информации о заказе.")
 
-# Обработчик для администратора: просмотр последних заказов
+# Обработчик кнопки "Посмотреть заказы" для администратора
 @bot.message_handler(func=lambda message: message.text == "Посмотреть заказы")
 def view_orders(message):
-    chat_id = message.chat.id
-    orders_text = "Последние заказы:\n\n"
-    # Тестовая логика
-    for i in range(1, 6):
-        order_info = (f"Заказ {i}:\n"
-                      f"Имя: Иванов Иван\n"
-                      f"Телефон: +1234567890\n"
-                      f"Адрес: г. Москва, ул. Пушкина, д. Колотушкина\n"
-                      f"Товары:\n"
-                      f"Товар 1\n"
-                      f"Товар 2\n\n")
-        orders_text += order_info
+    cursor.execute('''
+        SELECT users.name, users.phone, users.address, orders.products, orders.comment
+        FROM orders
+        INNER JOIN users ON orders.chat_id = users.chat_id
+        WHERE orders.status = 0
+        ORDER BY orders.order_id DESC LIMIT 3
+    ''')
+    recent_orders = cursor.fetchall()
 
-    bot.send_message(chat_id, orders_text)
+    if recent_orders:
+        for order in recent_orders:
+            name, phone, address, products, comment = order
+            order_message = f"Последний заказ:\n\n" \
+                            f"Имя: {name}\n" \
+                            f"Телефон: {phone}\n" \
+                            f"Адрес: {address}\n" \
+                            f"Комментарий: {comment}\n" \
+                            f"Товары:\n{products}"
+            bot.send_message(ADMIN_CHAT_ID, order_message)
+    else:
+        bot.send_message(ADMIN_CHAT_ID, "Заказов нет.")
+
+# Функция для очистки корзины после заказа
+def clear_cart(chat_id):
+    cursor.execute('UPDATE orders SET status = 1 WHERE chat_id = ? AND status = 0', (chat_id,))
+    conn.commit()
+
 
 # Обработчик для администратора: отправка уведомления пользователю
 @bot.message_handler(func=lambda message: message.text == "Отправить уведомление")
@@ -226,4 +282,3 @@ def handle_admin_text(message):
 
 # Запуск бота
 bot.polling(none_stop=True)
-
