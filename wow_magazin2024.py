@@ -7,7 +7,7 @@ from yookassa import Configuration, Payment
 API_TOKEN = 'YOUR_TELEGRAM_BOT_API_TOKEN'
 ADMIN_CHAT_ID = 'YOUR_ADMIN_CHAT_ID'
 YOOKASSA_SHOP_ID = 'YOUR_YOOKASSA_SHOP_ID'
-YOOKASSA_SECRET_KEY = 'YOUR_YOOKASSA_SECRET_KEY.'
+YOOKASSA_SECRET_KEY = 'YOUR_YOOKASSA_SECRET_KEY'
 
 # Инициализация бота
 bot = telebot.TeleBot(API_TOKEN)
@@ -251,13 +251,15 @@ def handle_payment_option(message):
             cursor.execute('UPDATE orders SET payment_status = "pending" WHERE order_id = ?', (order_id,))
             conn.commit()
             bot.send_message(chat_id, f"Пожалуйста, оплатите заказ по следующей ссылке:\n{confirmation_url}")
-            notify_admin(order_id, payment_status="pending")
+            # Здесь оплата ещё не произведена, поэтому уведомление администратору не отправляем
         elif message.text == "Оплатить позже":
             cursor.execute('UPDATE orders SET status = 1 WHERE order_id = ?', (order_id,))
             conn.commit()
             notify_admin(order_id, payment_status="not_paid")
             bot.send_message(chat_id, "Ваш заказ отправлен администратору. Вы можете оплатить его позже.")
             show_product_groups(chat_id)
+    else:
+        bot.send_message(chat_id, "Произошла ошибка. Пожалуйста, попробуйте снова.")
 
 
 # Функция для уведомления администратора о новом заказе
