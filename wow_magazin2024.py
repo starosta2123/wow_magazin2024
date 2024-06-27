@@ -1,19 +1,28 @@
 import telebot
 from telebot import types
 import sqlite3
+from yookassa import Configuration, Payment
+import time
+import threading
 
-# Настройки бота
+# Настройки бота и Yookassa
 API_TOKEN = 'API_TOKEN'
 ADMIN_CHAT_ID = 'ADMIN_CHAT_ID'
+YOOKASSA_SHOP_ID = 'YOOKASSA_SHOP_ID'
+YOOKASSA_SECRET_KEY = 'YOOKASSA_SECRET_KEY'
 
 # Инициализация бота
 bot = telebot.TeleBot(API_TOKEN)
+
+# Настройки Yookassa
+Configuration.account_id = YOOKASSA_SHOP_ID
+Configuration.secret_key = YOOKASSA_SECRET_KEY
 
 # Подключение к базе данных SQLite
 conn = sqlite3.connect('orders.db', check_same_thread=False)
 cursor = conn.cursor()
 
-# Создание таблицы пользователей, если она не существует
+# Создание таблиц пользователей и заказов, если они не существуют
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS users (
         chat_id INTEGER PRIMARY KEY,
@@ -22,8 +31,6 @@ cursor.execute('''
         address TEXT
     )
 ''')
-
-# Создание таблицы заказов, если она не существует
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS orders (
         order_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,30 +38,46 @@ cursor.execute('''
         products TEXT,
         comment TEXT,
         status INTEGER DEFAULT 0,
+        total_amount REAL,
+        payment_status TEXT DEFAULT 'pending',
+        payment_id TEXT,
         FOREIGN KEY(chat_id) REFERENCES users(chat_id)
     )
 ''')
+
 conn.commit()
+
+# Словарь с ценами на товары и ссылками на изображения
+products = {
+    "Группа 1": [
+        {"name": "Товар 1-1", "price": 100.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR9apjZiHZttidLKVS-zMLTlaFfvcG1pzdWpg&s"},
+        {"name": "Товар 1-2", "price": 150.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSr76mEileUe9WYQmOPSQST7o1gptHEfyvfGg&s"}
+    ],
+    "Группа 2": [
+        {"name": "Товар 2-1", "price": 200.0, "image_url": "https://cs1.livemaster.ru/storage/36/66/b3a7b11eaa139492e1426c72c9rc--posuda-kruzhka-shrek.jpg"},
+        {"name": "Товар 2-2", "price": 250.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTKnNtFG4l4Vcrsh_w51bq15S5iodtF-zj_eg&s"},
+        {"name": "Товар 2-3", "price": 300.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ0memid57YTbs_lUtzGQlHdPo8ubbFO4rAWA&s"}
+    ]
+}
+
 
 # Обработчик команды /start для пользователя
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
     if str(chat_id) == ADMIN_CHAT_ID:
-        # Если пользователь является администратором
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(types.KeyboardButton("Отправить уведомление"))
         bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
     else:
-        # Если пользователь не является администратором
         cursor.execute('SELECT * FROM users WHERE chat_id = ?', (chat_id,))
         user = cursor.fetchone()
         if user:
-            # Если пользователь уже зарегистрирован, переходим к отображению групп товаров
             show_product_groups(chat_id)
         else:
             bot.send_message(chat_id, "Добро пожаловать! Пожалуйста, введите ваше имя:")
             bot.register_next_step_handler(message, get_name)
+
 
 # Функция для получения имени пользователя
 def get_name(message):
@@ -65,6 +88,7 @@ def get_name(message):
     bot.send_message(chat_id, "Пожалуйста, введите ваш телефон:")
     bot.register_next_step_handler(message, get_phone)
 
+
 # Функция для получения телефона пользователя
 def get_phone(message):
     chat_id = message.chat.id
@@ -74,6 +98,7 @@ def get_phone(message):
     bot.send_message(chat_id, "Пожалуйста, введите ваш адрес:")
     bot.register_next_step_handler(message, get_address)
 
+
 # Функция для получения адреса пользователя
 def get_address(message):
     chat_id = message.chat.id
@@ -82,84 +107,86 @@ def get_address(message):
     conn.commit()
     show_product_groups(chat_id)
 
+
 # Функция для отображения групп товаров
 def show_product_groups(chat_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    item1 = types.KeyboardButton("Группа 1")
-    item2 = types.KeyboardButton("Группа 2")
+    for group in products.keys():
+        markup.add(types.KeyboardButton(group))
     cart_btn = types.KeyboardButton("Корзина")
-    edit_data_btn = types.KeyboardButton("Редактировать данные")
     main_menu = types.KeyboardButton("Главное меню")
-    markup.add(item1, item2)
-    markup.add(cart_btn, edit_data_btn)
-    markup.add(main_menu)
+    edit_data = types.KeyboardButton("Редактировать данные")
+    markup.add(cart_btn, main_menu)
+    markup.add(edit_data)
     bot.send_message(chat_id, "Выберите группу товаров:", reply_markup=markup)
 
-# Обработчик кнопки "Главное меню"
-@bot.message_handler(func=lambda message: message.text == "Главное меню")
-def handle_main_menu(message):
-    chat_id = message.chat.id
-    show_product_groups(chat_id)
 
 # Обработчик выбора группы товаров
-@bot.message_handler(func=lambda message: message.text in ["Группа 1", "Группа 2"])
+@bot.message_handler(func=lambda message: message.text in products.keys())
 def show_products(message):
     chat_id = message.chat.id
     group = message.text
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    if group == "Группа 1":
-        item1 = types.KeyboardButton("Товар 1-1")
-        item2 = types.KeyboardButton("Товар 1-2")
-        back = types.KeyboardButton("Назад")
-        cart_btn = types.KeyboardButton("Корзина")
-        main_menu = types.KeyboardButton("Главное меню")
-        markup.add(item1, item2, back)
-        markup.add(cart_btn, main_menu)
-        bot.send_message(chat_id, "Выберите товар из Группы 1:", reply_markup=markup)
-    elif group == "Группа 2":
-        item1 = types.KeyboardButton("Товар 2-1")
-        item2 = types.KeyboardButton("Товар 2-2")
-        item3 = types.KeyboardButton("Товар 2-3")
-        back = types.KeyboardButton("Назад")
-        cart_btn = types.KeyboardButton("Корзина")
-        main_menu = types.KeyboardButton("Главное меню")
-        markup.add(item1, item2, item3, back)
-        markup.add(cart_btn, main_menu)
-        bot.send_message(chat_id, "Выберите товар из Группы 2:", reply_markup=markup)
+    for item in products[group]:
+        markup.add(types.KeyboardButton(item["name"]))
+    back = types.KeyboardButton("Назад")
+    cart_btn = types.KeyboardButton("Корзина")
+    main_menu = types.KeyboardButton("Главное меню")
+    markup.add(back, cart_btn, main_menu)
+    bot.send_message(chat_id, f"Выберите товар из {group}:", reply_markup=markup)
+
 
 # Функция для добавления товара в корзину
-@bot.message_handler(func=lambda message: message.text.startswith("Товар"))
+@bot.message_handler(func=lambda message: any(message.text == item["name"] for group in products.values() for item in group))
 def add_to_cart(message):
     chat_id = message.chat.id
-    product = message.text
-    cursor.execute('SELECT order_id, products FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1', (chat_id,))
+    product_name = message.text
+    for group in products.values():
+        for item in group:
+            if item["name"] == product_name:
+                product = item
+                break
+
+    price = product["price"]
+    image_url = product["image_url"]
+
+    cursor.execute(
+        'SELECT products, total_amount FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1',
+        (chat_id,))
     last_order = cursor.fetchone()
-    if last_order:
-        order_id, products = last_order
-        if products:
-            products += f"\n{product}"
-        else:
-            products = product
-        cursor.execute('UPDATE orders SET products = ? WHERE order_id = ?', (products, order_id))
+
+    if last_order and last_order[0]:
+        products_in_order = last_order[0] + f"\n{product_name}"
+        total_amount = last_order[1] + price
+        cursor.execute(
+            'UPDATE orders SET products = ?, total_amount = ? WHERE chat_id = ? AND status = 0 AND order_id = (SELECT order_id FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1)',
+            (products_in_order, total_amount, chat_id, chat_id))
     else:
-        products = product
-        cursor.execute('INSERT INTO orders (chat_id, products, status) VALUES (?, ?, 0)', (chat_id, products))
+        products_in_order = product_name
+        total_amount = price
+        cursor.execute('INSERT INTO orders (chat_id, products, total_amount) VALUES (?, ?, ?)',
+                       (chat_id, products_in_order, total_amount))
+
     conn.commit()
-    bot.send_message(chat_id, f"{product} добавлен в корзину.")
+    bot.send_photo(chat_id, photo=image_url, caption=f"{product_name} добавлен в корзину.")
     show_product_groups(chat_id)
+
 
 # Обработчик кнопки "Корзина"
 @bot.message_handler(func=lambda message: message.text == "Корзина")
 def view_cart(message):
     chat_id = message.chat.id
-    cursor.execute('SELECT products FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1', (chat_id,))
+    cursor.execute(
+        'SELECT products, total_amount FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1',
+        (chat_id,))
     cart_items = cursor.fetchone()
     if cart_items and cart_items[0]:
-        bot.send_message(chat_id, f"Ваша корзина:\n{cart_items[0]}")
+        bot.send_message(chat_id, f"Ваша корзина:\n{cart_items[0]}\n\nОбщая сумма: {cart_items[1]} руб.")
         send_order(message)
     else:
         bot.send_message(chat_id, "Ваша корзина пуста.")
         show_product_groups(chat_id)
+
 
 # Функция для отправки заказа
 def send_order(message):
@@ -167,103 +194,151 @@ def send_order(message):
     bot.send_message(chat_id, "Пожалуйста, добавьте комментарий к вашему заказу:")
     bot.register_next_step_handler(message, get_comment)
 
+
 # Функция для получения комментария к заказу
 def get_comment(message):
     chat_id = message.chat.id
     comment = message.text
-
-    # Получаем ID последнего заказа пользователя
-    cursor.execute('SELECT order_id FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1', (chat_id,))
+    cursor.execute('SELECT order_id FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1',
+                   (chat_id,))
     order_id = cursor.fetchone()
 
     if order_id:
-        # Обновляем комментарий в последнем заказе пользователя
-        cursor.execute('UPDATE orders SET comment = ?, status = 0 WHERE order_id = ?', (comment, order_id[0]))
+        cursor.execute('UPDATE orders SET comment = ? WHERE order_id = ?', (comment, order_id[0]))
         conn.commit()
-
-        # Отправляем уведомление пользователю с номером заказа
-        bot.send_message(chat_id, f"Спасибо за ваш заказ! Номер вашего заказа: {order_id[0]}")
-
-        notify_admin(chat_id, order_id[0])
-        clear_cart(chat_id)  # Очистка корзины после заказа
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(types.KeyboardButton("Оплатить"), types.KeyboardButton("Оплатить позже"))
+        bot.send_message(chat_id, "Выберите способ оплаты:", reply_markup=markup)
     else:
-        bot.send_message(chat_id, "Произошла ошибка при добавлении комментария к заказу.")
+        bot.send_message(chat_id, "Произошла ошибка. Пожалуйста, попробуйте снова.")
 
-# Функция для отправки уведомления администратору
-def notify_admin(chat_id, order_id):
-    cursor.execute('''
-        SELECT users.chat_id, users.name, users.phone, users.address, orders.products, orders.comment
-        FROM orders
-        INNER JOIN users ON orders.chat_id = users.chat_id
-        WHERE orders.order_id = ?
-    ''', (order_id,))
+
+# Функция для уведомления администратора
+def notify_admin(order_id, payment_status):
+    cursor.execute('SELECT * FROM orders WHERE order_id = ?', (order_id,))
+    order_info = cursor.fetchone()
+    if order_info:
+        chat_id, products, comment, status, total_amount, payment_status_db, payment_id = order_info[1:]
+        cursor.execute('SELECT name, phone, address FROM users WHERE chat_id = ?', (chat_id,))
+        user_info = cursor.fetchone()
+        if user_info:
+            name, phone, address = user_info
+            bot.send_message(ADMIN_CHAT_ID,
+                             f"Новый заказ №{order_id}\n\nПользователь: {name}\nТелефон: {phone}\nАдрес: {address}\n\nТовары:\n{products}\n\nКомментарий: {comment}\n\nОбщая сумма: {total_amount} руб.\n\nСтатус оплаты: {payment_status}")
+
+
+# Функция для проверки статуса платежа
+def check_payment_status(payment_id):
+    payment = Payment.find_one(payment_id)
+    return payment.status
+
+
+# Фоновая функция для периодической проверки статуса платежа
+def background_payment_check(order_id, payment_id, chat_id):
+    while True:
+        payment_status = check_payment_status(payment_id)
+        if payment_status == 'succeeded':
+            cursor.execute('UPDATE orders SET payment_status = "succeeded", status = 1 WHERE order_id = ?', (order_id,))
+            conn.commit()
+            notify_admin(order_id, payment_status="Оплачен")
+            bot.send_message(chat_id, "Ваш заказ успешно оплачен и отправлен администратору.")
+            show_product_groups(chat_id)  # Возвращаемся к выбору групп товаров
+            break
+        elif payment_status == 'canceled':
+            bot.send_message(chat_id, "Произошла ошибка при оплате. Пожалуйста, попробуйте снова.")
+            break
+        time.sleep(30)
+
+
+# Обработчик выбора способа оплаты
+@bot.message_handler(func=lambda message: message.text in ["Оплатить", "Оплатить позже"])
+def handle_payment_option(message):
+    chat_id = message.chat.id
+    cursor.execute(
+        'SELECT order_id, total_amount FROM orders WHERE chat_id = ? AND status = 0 ORDER BY order_id DESC LIMIT 1',
+        (chat_id,))
     order_info = cursor.fetchone()
 
     if order_info:
-        user_id, name, phone, address, products, comment = order_info
-        message_to_admin = f"Новый заказ!\n\n" \
-                           f"Номер заказа: {order_id}\n" \
-                           f"ID пользователя: {user_id}\n" \
-                           f"Имя: {name}\n" \
-                           f"Телефон: {phone}\n" \
-                           f"Адрес: {address}\n" \
-                           f"Комментарий: {comment}\n" \
-                           f"Товары:\n{products}"
-        bot.send_message(ADMIN_CHAT_ID, message_to_admin)
+        order_id, total_amount = order_info
+        if message.text == "Оплатить":
+            payment = Payment.create({
+                "amount": {
+                    "value": str(total_amount),
+                    "currency": "RUB"
+                },
+                "confirmation": {
+                    "type": "redirect",
+                    "return_url": "https://www.example.com/return"
+                },
+                "capture": True,
+                "description": f"Order #{order_id}"
+            })
+            confirmation_url = payment.confirmation.confirmation_url
+            cursor.execute('UPDATE orders SET payment_status = "pending", payment_id = ? WHERE order_id = ?',
+                           (payment.id, order_id))
+            conn.commit()
+            bot.send_message(chat_id, f"Пожалуйста, оплатите заказ по следующей ссылке:\n{confirmation_url}")
 
-# Функция для очистки корзины
-def clear_cart(chat_id):
-    cursor.execute('DELETE FROM orders WHERE chat_id = ? AND status = 0', (chat_id,))
-    conn.commit()
+            # Запуск фоновой задачи для проверки статуса платежа
+            threading.Thread(target=background_payment_check, args=(order_id, payment.id, chat_id)).start()
+
+        elif message.text == "Оплатить позже":
+            cursor.execute('UPDATE orders SET status = 1 WHERE order_id = ?', (order_id,))
+            conn.commit()
+            notify_admin(order_id, payment_status="Не оплачен")
+            bot.send_message(chat_id, "Ваш заказ отправлен администратору. Вы можете оплатить его позже.")
+            show_product_groups(chat_id)  # Возвращаемся к выбору групп товаров
+    else:
+        bot.send_message(chat_id, "Произошла ошибка. Пожалуйста, попробуйте снова.")
+
 
 # Обработчик кнопки "Редактировать данные"
 @bot.message_handler(func=lambda message: message.text == "Редактировать данные")
 def edit_user_data(message):
     chat_id = message.chat.id
     cursor.execute('SELECT name, phone, address FROM users WHERE chat_id = ?', (chat_id,))
-    user = cursor.fetchone()
-    if user:
-        name, phone, address = user
-        bot.send_message(chat_id, f"Ваши текущие данные:\nИмя: {name}\nТелефон: {phone}\nАдрес: {address}")
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        phone_btn = types.KeyboardButton("Изменить номер телефона")
-        address_btn = types.KeyboardButton("Изменить адрес")
-        main_menu = types.KeyboardButton("Главное меню")
-        markup.add(phone_btn, address_btn)
-        markup.add(main_menu)
-        bot.send_message(chat_id, "Выберите, что вы хотите изменить:", reply_markup=markup)
+    user_info = cursor.fetchone()
+
+    if user_info:
+        name, phone, address = user_info
+        bot.send_message(chat_id, f"Ваши текущие данные:\n\nИмя: {name}\nТелефон: {phone}\nАдрес: {address}")
+        bot.send_message(chat_id, "Введите новое имя или /skip, чтобы пропустить:")
+        bot.register_next_step_handler(message, edit_name)
     else:
-        bot.send_message(chat_id, "Произошла ошибка при получении ваших данных. Попробуйте снова.")
-        show_product_groups(chat_id)
+        bot.send_message(chat_id, "Произошла ошибка. Пожалуйста, попробуйте снова.")
 
-# Обработчик кнопки "Изменить номер телефона"
-@bot.message_handler(func=lambda message: message.text == "Изменить номер телефона")
-def change_phone(message):
-    chat_id = message.chat.id
-    bot.send_message(chat_id, "Введите новый номер телефона:")
-    bot.register_next_step_handler(message, update_phone)
 
-def update_phone(message):
+# Функция для редактирования имени пользователя
+def edit_name(message):
     chat_id = message.chat.id
-    new_phone = message.text
-    cursor.execute('UPDATE users SET phone = ? WHERE chat_id = ?', (new_phone, chat_id))
-    conn.commit()
-    bot.send_message(chat_id, "Номер телефона успешно обновлен.")
-    show_product_groups(chat_id)
+    name = message.text
+    if name != '/skip':
+        cursor.execute('UPDATE users SET name = ? WHERE chat_id = ?', (name, chat_id))
+        conn.commit()
+    bot.send_message(chat_id, "Введите новый телефон или /skip, чтобы пропустить:")
+    bot.register_next_step_handler(message, edit_phone)
 
-# Обработчик кнопки "Изменить адрес"
-@bot.message_handler(func=lambda message: message.text == "Изменить адрес")
-def change_address(message):
-    chat_id = message.chat.id
-    bot.send_message(chat_id, "Введите новый адрес:")
-    bot.register_next_step_handler(message, update_address)
 
-def update_address(message):
+# Функция для редактирования телефона пользователя
+def edit_phone(message):
     chat_id = message.chat.id
-    new_address = message.text
-    cursor.execute('UPDATE users SET address = ? WHERE chat_id = ?', (new_address, chat_id))
-    conn.commit()
-    bot.send_message(chat_id, "Адрес успешно обновлен.")
+    phone = message.text
+    if phone != '/skip':
+        cursor.execute('UPDATE users SET phone = ? WHERE chat_id = ?', (phone, chat_id))
+        conn.commit()
+    bot.send_message(chat_id, "Введите новый адрес или /skip, чтобы пропустить:")
+    bot.register_next_step_handler(message, edit_address)
+
+
+# Функция для редактирования адреса пользователя
+def edit_address(message):
+    chat_id = message.chat.id
+    address = message.text
+    if address != '/skip':
+        cursor.execute('UPDATE users SET address = ? WHERE chat_id = ?', (address, chat_id))
+        conn.commit()
+    bot.send_message(chat_id, "Ваши данные обновлены.")
     show_product_groups(chat_id)
 
 # Обработчик кнопки "Отправить уведомление" для администратора
