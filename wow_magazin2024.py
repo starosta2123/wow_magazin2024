@@ -50,13 +50,13 @@ conn.commit()
 # Словарь с ценами на товары и ссылками на изображения
 products = {
     "Группа 1": [
-        {"name": "Товар 1-1", "price": 100.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR9apjZiHZttidLKVS-zMLTlaFfvcG1pzdWpg&s"},
-        {"name": "Товар 1-2", "price": 150.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSr76mEileUe9WYQmOPSQST7o1gptHEfyvfGg&s"}
+        {"name": "Товар 1-1 (100 руб)", "price": 100.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR9apjZiHZttidLKVS-zMLTlaFfvcG1pzdWpg&s"},
+        {"name": "Товар 1-2 (150 руб)", "price": 150.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSr76mEileUe9WYQmOPSQST7o1gptHEfyvfGg&s"}
     ],
     "Группа 2": [
-        {"name": "Товар 2-1", "price": 200.0, "image_url": "https://cs1.livemaster.ru/storage/36/66/b3a7b11eaa139492e1426c72c9rc--posuda-kruzhka-shrek.jpg"},
-        {"name": "Товар 2-2", "price": 250.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTKnNtFG4l4Vcrsh_w51bq15S5iodtF-zj_eg&s"},
-        {"name": "Товар 2-3", "price": 300.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ0memid57YTbs_lUtzGQlHdPo8ubbFO4rAWA&s"}
+        {"name": "Товар 2-1 (200 руб)", "price": 200.0, "image_url": "https://cs1.livemaster.ru/storage/36/66/b3a7b11eaa139492e1426c72c9rc--posuda-kruzhka-shrek.jpg"},
+        {"name": "Товар 2-2 (250 руб)", "price": 250.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTKnNtFG4l4Vcrsh_w51bq15S5iodtF-zj_eg&s"},
+        {"name": "Товар 2-3 (300 руб)", "price": 300.0, "image_url": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ0memid57YTbs_lUtzGQlHdPo8ubbFO4rAWA&s"}
     ]
 }
 
